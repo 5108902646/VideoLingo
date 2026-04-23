@@ -7,6 +7,7 @@ from rich import print as rprint
 from core.utils.openai_compatible import (
     apply_degradation,
     build_request_url,
+    build_request_urls,
     classify_retry_action,
     debug_log,
     load_cfg_safe,
@@ -75,6 +76,8 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         "sanitize_null_fields": load_cfg_safe(load_key, "api.sanitize_null_fields", True),
         "drop_optional_fields": load_cfg_safe(load_key, "api.drop_optional_fields", []),
         "auto_switch_protocol_on_block": load_cfg_safe(load_key, "api.auto_switch_protocol_on_block", True),
+        "chat_completions_path": load_cfg_safe(load_key, "api.chat_completions_path", ""),
+        "responses_path": load_cfg_safe(load_key, "api.responses_path", ""),
     }
 
     base_url = normalize_base_url(load_key("api.base_url"), api_protocol)
@@ -99,6 +102,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
     params = sanitize_payload(params, compat_cfg)
 
     request_url = build_request_url(base_url, api_protocol)
+    request_url_candidates = build_request_urls(base_url, api_protocol, compat_cfg)
     debug_log(
         "request_prepared",
         {
@@ -107,6 +111,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
             "protocol": api_protocol,
             "base_url": base_url,
             "request_url": request_url,
+            "request_url_candidates": request_url_candidates,
             "payload": redact_payload(params),
         },
     )
@@ -123,6 +128,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                 api_protocol=api_protocol,
                 payload=params,
                 timeout=timeout,
+                cfg=compat_cfg,
             )
 
             resp_content, parser_path = parse_response_text(resp_raw)
@@ -163,6 +169,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                     "protocol": api_protocol,
                     "base_url": base_url,
                     "request_url": build_request_url(base_url, api_protocol),
+                    "request_url_candidates": build_request_urls(base_url, api_protocol, compat_cfg),
                     "retry": attempt + 1,
                     "error": error_text,
                     "payload": redact_payload(params),
@@ -187,7 +194,14 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                 )
                 rprint(f"[yellow]Relay compatibility fallback: {action}[/yellow]")
 
-            blocked_like = "blocked" in error_text.lower() or "http 403" in error_text.lower()
+            lowered_err = error_text.lower()
+            blocked_like = (
+                "blocked" in lowered_err
+                or "http 403" in lowered_err
+                or "http 502" in lowered_err
+                or "http 503" in lowered_err
+                or "http 504" in lowered_err
+            )
             if (
                 not action
                 and compat_cfg.get("auto_switch_protocol_on_block", True)
@@ -218,6 +232,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                         "log_title": log_title,
                         "new_protocol": api_protocol,
                         "request_url": build_request_url(base_url, api_protocol),
+                        "request_url_candidates": build_request_urls(base_url, api_protocol, compat_cfg),
                         "retry": attempt + 1,
                         "payload": redact_payload(params),
                     },

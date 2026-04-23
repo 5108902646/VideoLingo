@@ -23,6 +23,8 @@ api:
   drop_optional_fields: []
   request_timeout: 300
   auto_switch_protocol_on_block: true
+  chat_completions_path: ''
+  responses_path: ''
 # *Number of LLM multi-threaded accesses, set to 1 if using local LLM
 max_workers: 4
 

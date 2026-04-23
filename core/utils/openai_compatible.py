@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
@@ -17,18 +18,12 @@ def load_cfg_safe(load_key_fn, key, default=None):
         return default
 
 
-def _ensure_v1_path(base_url: str) -> str:
+def _strip_trailing_v1_path(base_url: str) -> str:
     parsed = urlparse(base_url)
     path = (parsed.path or "").rstrip("/")
     if path.endswith("/v1"):
-        new_path = path
-    elif "/v1/" in f"{path}/":
-        new_path = path
-    elif not path:
-        new_path = "/v1"
-    else:
-        new_path = f"{path}/v1"
-    return urlunparse(parsed._replace(path=new_path))
+        path = path[: -len("/v1")]
+    return urlunparse(parsed._replace(path=path or ""))
 
 
 def normalize_base_url(base_url: str, api_protocol: str) -> str:
@@ -46,17 +41,56 @@ def normalize_base_url(base_url: str, api_protocol: str) -> str:
             url = url[: -len(suffix)]
             break
 
-    # OpenAI-compatible relays usually expect /v1 for both chat and responses APIs.
-    if api_protocol in {"chat_completions", "responses"}:
-        return _ensure_v1_path(url).rstrip("/")
+    # Keep the URL as entered (after normalization) and probe both with/without /v1 later.
     return url
 
 
-def build_request_url(base_url: str, api_protocol: str) -> str:
-    url = (base_url or "").rstrip("/")
+def _with_v1_path(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        path = "/v1"
+    elif not path.endswith("/v1"):
+        path = f"{path}/v1"
+    return urlunparse(parsed._replace(path=path))
+
+
+def build_base_url_candidates(base_url: str):
+    raw = (base_url or "").rstrip("/")
+    with_v1 = _with_v1_path(raw).rstrip("/")
+    without_v1 = _strip_trailing_v1_path(raw).rstrip("/")
+
+    candidates = []
+    for item in [raw, with_v1, without_v1]:
+        if item and item not in candidates:
+            candidates.append(item)
+    return candidates
+
+
+def build_request_urls(base_url: str, api_protocol: str, cfg: dict | None = None):
+    cfg = cfg or {}
     if api_protocol == "responses":
-        return f"{url}/responses"
-    return f"{url}/chat/completions"
+        default_path = "/responses"
+        custom_path = (cfg.get("responses_path") or "").strip()
+    else:
+        default_path = "/chat/completions"
+        custom_path = (cfg.get("chat_completions_path") or "").strip()
+
+    endpoint_path = custom_path if custom_path else default_path
+    if not endpoint_path.startswith("/"):
+        endpoint_path = "/" + endpoint_path
+
+    urls = []
+    for base in build_base_url_candidates(base_url):
+        url = f"{base.rstrip('/')}{endpoint_path}"
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def build_request_url(base_url: str, api_protocol: str):
+    # Keep backward-compatible single-URL helper for existing logs.
+    return build_request_urls(base_url, api_protocol)[0]
 
 
 def sanitize_payload(payload: dict, cfg: dict) -> dict:
@@ -309,28 +343,56 @@ def response_to_text(resp_obj, max_len=2000):
         return truncate_text(str(resp_obj), max_len)
 
 
-def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, payload: dict, timeout: int = 300):
-    url = build_request_url(base_url, api_protocol)
+def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, payload: dict, timeout: int = 300, cfg: dict | None = None):
+    candidate_urls = build_request_urls(base_url, api_protocol, cfg)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    raw_text = truncate_text(resp.text or "", 2000)
+    last_error = None
 
-    parsed = None
-    if resp.text:
-        try:
-            parsed = resp.json()
-        except Exception:
-            parsed = resp.text
+    for url in candidate_urls:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        raw_text = truncate_text(resp.text or "", 2000)
 
-    if resp.status_code >= 400:
+        parsed = None
+        if resp.text:
+            try:
+                parsed = resp.json()
+            except Exception:
+                parsed = resp.text
+
+        if resp.status_code < 400:
+            return parsed, resp.status_code, raw_text, url
+
         err_msg = raw_text
         if isinstance(parsed, dict):
             error_obj = parsed.get("error")
             if isinstance(error_obj, dict):
                 err_msg = error_obj.get("message") or error_obj.get("code") or raw_text
-        raise ValueError(f"HTTP {resp.status_code}: {err_msg}")
+        elif isinstance(parsed, str):
+            title_match = re.search(r"<title>(.*?)</title>", parsed, re.IGNORECASE | re.DOTALL)
+            if title_match:
+                err_msg = title_match.group(1).strip()
+            elif "bad gateway" in parsed.lower():
+                err_msg = "Bad gateway"
 
-    return parsed, resp.status_code, raw_text, url
+        if resp.status_code in {502, 503, 504}:
+            err_msg = f"Relay upstream gateway error ({err_msg})"
+
+        last_error = {
+            "status_code": resp.status_code,
+            "error": err_msg,
+            "url": url,
+        }
+
+        # Keep probing other candidates for routing/path issues.
+        if resp.status_code in {404, 405, 502, 503, 504}:
+            continue
+        raise ValueError(f"HTTP {resp.status_code}: {err_msg} @ {url}")
+
+    if last_error:
+        raise ValueError(
+            f"HTTP {last_error['status_code']}: {last_error['error']} @ {last_error['url']}"
+        )
+    raise ValueError("Relay request failed without response")
