@@ -3,7 +3,7 @@ import requests
 from translations.translations import translate as t
 from translations.translations import DISPLAY_LANGUAGES
 from core.utils import *
-from core.utils.openai_compatible import normalize_base_url, load_cfg_safe
+from core.utils.openai_compatible import load_cfg_safe, build_models_urls
 
 
 def config_input(label, key, help=None, placeholder=None):
@@ -22,18 +22,24 @@ def _fetch_model_list(base_url, api_key):
     """Fetch available models from OpenAI-compatible /v1/models endpoint."""
     if not api_key or not base_url:
         return []
-    protocol = _load_key_safe("api.api_protocol", "chat_completions")
-    url = normalize_base_url(base_url, protocol)
-    url += "/models"
-    try:
-        resp = requests.get(
-            url, headers={"Authorization": f"Bearer {api_key}"}, timeout=10
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        return sorted([m["id"] for m in data if "id" in m])
-    except Exception:
-        return []
+    models_path = _load_key_safe("api.models_path", "")
+    cfg = {"models_path": models_path}
+    candidate_urls = build_models_urls(base_url, cfg)
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    for url in candidate_urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code >= 400:
+                continue
+            body = resp.json()
+            data = body.get("data", []) if isinstance(body, dict) else []
+            models = sorted([m["id"] for m in data if isinstance(m, dict) and "id" in m])
+            if models:
+                return models
+        except Exception:
+            continue
+    return []
 
 
 def _search_models(search_term, **kwargs):

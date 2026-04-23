@@ -93,6 +93,21 @@ def build_request_url(base_url: str, api_protocol: str):
     return build_request_urls(base_url, api_protocol)[0]
 
 
+def build_models_urls(base_url: str, cfg: dict | None = None):
+    cfg = cfg or {}
+    custom_path = (cfg.get("models_path") or "").strip()
+    default_path = custom_path if custom_path else "/models"
+    if not default_path.startswith("/"):
+        default_path = "/" + default_path
+
+    urls = []
+    for base in build_base_url_candidates(base_url):
+        model_url = f"{base.rstrip('/')}{default_path}"
+        if model_url not in urls:
+            urls.append(model_url)
+    return urls
+
+
 def sanitize_payload(payload: dict, cfg: dict) -> dict:
     cleaned = dict(payload)
     if cfg.get("sanitize_null_fields", True):
