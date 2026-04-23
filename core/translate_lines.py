@@ -7,12 +7,17 @@ from core.utils import *
 console = Console()
 
 def valid_translate_result(result: dict, required_keys: list, required_sub_keys: list):
+    if not isinstance(result, dict):
+        return {"status": "error", "message": f"Expected JSON object, got {type(result).__name__}"}
+
     # Check for the required key
     if not all(key in result for key in required_keys):
         return {"status": "error", "message": f"Missing required key(s): {', '.join(set(required_keys) - set(result.keys()))}"}
     
     # Check for required sub-keys in all items
     for key in result:
+        if not isinstance(result[key], dict):
+            return {"status": "error", "message": f"Item {key} must be an object, got {type(result[key]).__name__}"}
         if not all(sub_key in result[key] for sub_key in required_sub_keys):
             return {"status": "error", "message": f"Missing required sub-key(s) in item {key}: {', '.join(set(required_sub_keys) - set(result[key].keys()))}"}
 
@@ -28,15 +33,29 @@ def translate_lines(lines, previous_content_prompt, after_cotent_prompt, things_
         def valid_express(response_data):
             return valid_translate_result(response_data, [str(i) for i in range(1, length+1)], ['free'])
         for retry in range(3):
-            if step_name == 'faithfulness':
-                result = ask_gpt(prompt+retry* " ", resp_type='json', valid_def=valid_faith, log_title=f'translate_{step_name}')
-            elif step_name == 'expressiveness':
-                result = ask_gpt(prompt+retry* " ", resp_type='json', valid_def=valid_express, log_title=f'translate_{step_name}')
+            try:
+                if step_name == 'faithfulness':
+                    result = ask_gpt(prompt+retry* " ", resp_type='json', valid_def=valid_faith, log_title=f'translate_{step_name}')
+                elif step_name == 'expressiveness':
+                    result = ask_gpt(prompt+retry* " ", resp_type='json', valid_def=valid_express, log_title=f'translate_{step_name}')
+                else:
+                    raise ValueError(f"Unknown translation step: {step_name}")
+            except Exception as e:
+                if retry != 2:
+                    console.print(f"[yellow]⚠️ {step_name.capitalize()} translation of block {index} failed at try {retry+1}/3: {e}[/yellow]")
+                    continue
+                raise ValueError(
+                    f"[red]❌ {step_name.capitalize()} translation of block {index} failed after 3 retries. "
+                    f"Last error: {e}. Check output/gpt_log/error.json and output/gpt_log/relay_compat_debug.jsonl[/red]"
+                )
             if len(lines.split('\n')) == len(result):
                 return result
             if retry != 2:
                 console.print(f'[yellow]⚠️ {step_name.capitalize()} translation of block {index} failed, Retry...[/yellow]')
-        raise ValueError(f'[red]❌ {step_name.capitalize()} translation of block {index} failed after 3 retries. Please check `output/gpt_log/error.json` for more details.[/red]')
+        raise ValueError(
+            f'[red]❌ {step_name.capitalize()} translation of block {index} failed after 3 retries '
+            f'due to length mismatch. Check output/gpt_log/error.json and output/gpt_log/relay_compat_debug.jsonl[/red]'
+        )
 
     ## Step 1: Faithful to the Original Text
     prompt1 = get_prompt_faithfulness(lines, shared_prompt)

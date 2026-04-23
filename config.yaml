@@ -14,7 +14,14 @@ api:
   key: 'your-api-key'
   base_url: 'https://yunwu.ai'
   model: ''
+  provider_type: 'openai_compatible'
+  api_protocol: 'responses'
   llm_support_json: false
+  supports_response_format: false
+  supports_tools: false
+  sanitize_null_fields: true
+  drop_optional_fields: []
+  request_timeout: 300
 # *Number of LLM multi-threaded accesses, set to 1 if using local LLM
 max_workers: 4
 

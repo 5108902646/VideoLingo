@@ -1,11 +1,22 @@
 import os
 import json
+import time
 from threading import Lock
-import json_repair
 from openai import OpenAI
 from core.utils.config_utils import load_key
 from rich import print as rprint
-from core.utils.decorator import except_handler
+from core.utils.openai_compatible import (
+    apply_degradation,
+    classify_retry_action,
+    debug_log,
+    load_cfg_safe,
+    normalize_base_url,
+    parse_json_relaxed,
+    parse_response_text,
+    redact_payload,
+    response_to_text,
+    sanitize_payload,
+)
 
 # ------------
 # cache gpt response
@@ -40,7 +51,6 @@ def _load_cache(prompt, resp_type, log_title):
 # ask gpt once
 # ------------
 
-@except_handler("GPT request failed", retry=5)
 def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
     if not load_key("api.key"):
         raise ValueError("API key is not set")
@@ -51,40 +61,125 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         return cached
 
     model = load_key("api.model")
-    base_url = load_key("api.base_url")
-    if 'ark' in base_url:
-        base_url = "https://ark.cn-beijing.volces.com/api/v3" # huoshan base url
-    elif 'v1' not in base_url:
-        base_url = base_url.strip('/') + '/v1'
-    client = OpenAI(api_key=load_key("api.key"), base_url=base_url)
-    response_format = {"type": "json_object"} if resp_type == "json" and load_key("api.llm_support_json") else None
+    api_key = load_key("api.key")
+    api_protocol = load_cfg_safe(load_key, "api.api_protocol", "chat_completions")
+    if api_protocol not in {"chat_completions", "responses"}:
+        api_protocol = "chat_completions"
 
-    messages = [{"role": "user", "content": prompt}]
+    compat_cfg = {
+        "provider_type": load_cfg_safe(load_key, "api.provider_type", "openai_compatible"),
+        "supports_response_format": load_cfg_safe(load_key, "api.supports_response_format", load_key("api.llm_support_json")),
+        "supports_tools": load_cfg_safe(load_key, "api.supports_tools", False),
+        "sanitize_null_fields": load_cfg_safe(load_key, "api.sanitize_null_fields", True),
+        "drop_optional_fields": load_cfg_safe(load_key, "api.drop_optional_fields", []),
+    }
 
-    params = dict(
-        model=model,
-        messages=messages,
-        response_format=response_format,
-        timeout=300
-    )
-    resp_raw = client.chat.completions.create(**params)
+    base_url = normalize_base_url(load_key("api.base_url"), api_protocol)
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    timeout = int(load_cfg_safe(load_key, "api.request_timeout", 300))
+    use_json_mode = resp_type == "json" and bool(load_key("api.llm_support_json"))
+    response_format = {"type": "json_object"} if use_json_mode else None
 
-    # process and return full result
-    resp_content = resp_raw.choices[0].message.content
-    if resp_type == "json":
-        resp = json_repair.loads(resp_content)
+    if api_protocol == "responses":
+        params = {
+            "model": model,
+            "input": prompt,
+            "timeout": timeout,
+            "response_format": response_format,
+        }
     else:
-        resp = resp_content
-    
-    # check if the response format is valid
-    if valid_def:
-        valid_resp = valid_def(resp)
-        if valid_resp['status'] != 'success':
-            _save_cache(model, prompt, resp_content, resp_type, resp, log_title="error", message=valid_resp['message'])
-            raise ValueError(f"❎ API response error: {valid_resp['message']}")
+        params = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": response_format,
+            "timeout": timeout,
+        }
+    params = sanitize_payload(params, compat_cfg)
 
-    _save_cache(model, prompt, resp_content, resp_type, resp, log_title=log_title)
-    return resp
+    debug_log(
+        "request_prepared",
+        {
+            "log_title": log_title,
+            "provider": compat_cfg["provider_type"],
+            "protocol": api_protocol,
+            "base_url": base_url,
+            "payload": redact_payload(params),
+        },
+    )
+
+    max_retry = 5
+    degraded_steps = 0
+    last_exc = None
+    for attempt in range(max_retry):
+        try:
+            if api_protocol == "responses":
+                resp_raw = client.responses.create(**params)
+            else:
+                resp_raw = client.chat.completions.create(**params)
+
+            resp_content, parser_path = parse_response_text(resp_raw)
+            parse_attempts = ["text"]
+            if resp_type == "json":
+                resp, parse_attempts = parse_json_relaxed(resp_content)
+            else:
+                resp = resp_content
+
+            if valid_def:
+                valid_resp = valid_def(resp)
+                if valid_resp['status'] != 'success':
+                    _save_cache(model, prompt, resp_content, resp_type, resp, log_title="error", message=valid_resp['message'])
+                    raise ValueError(f"❎ API response error: {valid_resp['message']}")
+
+            debug_log(
+                "request_success",
+                {
+                    "log_title": log_title,
+                    "protocol": api_protocol,
+                    "base_url": base_url,
+                    "parser_path": parser_path,
+                    "json_parse_attempts": parse_attempts,
+                    "raw_response": response_to_text(resp_raw, max_len=2000),
+                },
+            )
+            _save_cache(model, prompt, resp_content, resp_type, resp, log_title=log_title)
+            return resp
+        except Exception as exc:
+            last_exc = exc
+            error_text = str(exc)
+            debug_log(
+                "request_error",
+                {
+                    "log_title": log_title,
+                    "protocol": api_protocol,
+                    "base_url": base_url,
+                    "retry": attempt + 1,
+                    "error": error_text,
+                    "payload": redact_payload(params),
+                },
+            )
+
+            if attempt == max_retry - 1:
+                break
+
+            action = classify_retry_action(exc, degraded_steps)
+            if action:
+                params = apply_degradation(params, action, compat_cfg)
+                degraded_steps += 1
+                debug_log(
+                    "request_degraded",
+                    {
+                        "log_title": log_title,
+                        "action": action,
+                        "retry": attempt + 1,
+                        "payload": redact_payload(params),
+                    },
+                )
+                rprint(f"[yellow]Relay compatibility fallback: {action}[/yellow]")
+
+            rprint(f"[red]GPT request failed: {error_text}, retry: {attempt+1}/{max_retry}[/red]")
+            time.sleep(2 ** attempt)
+
+    raise last_exc
 
 
 if __name__ == '__main__':

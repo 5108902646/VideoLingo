@@ -3,6 +3,7 @@ import requests
 from translations.translations import translate as t
 from translations.translations import DISPLAY_LANGUAGES
 from core.utils import *
+from core.utils.openai_compatible import normalize_base_url, load_cfg_safe
 
 
 def config_input(label, key, help=None, placeholder=None):
@@ -13,13 +14,16 @@ def config_input(label, key, help=None, placeholder=None):
     return val
 
 
+def _load_key_safe(key, default=None):
+    return load_cfg_safe(load_key, key, default)
+
+
 def _fetch_model_list(base_url, api_key):
     """Fetch available models from OpenAI-compatible /v1/models endpoint."""
     if not api_key or not base_url:
         return []
-    url = base_url.rstrip("/")
-    if not url.endswith("/v1"):
-        url += "/v1"
+    protocol = _load_key_safe("api.api_protocol", "chat_completions")
+    url = normalize_base_url(base_url, protocol)
     url += "/models"
     try:
         resp = requests.get(
@@ -69,7 +73,7 @@ def page_setting():
         config_input(
             t("BASE_URL"),
             "api.base_url",
-            help=t("Openai format, will add /v1/chat/completions automatically"),
+            help=t("OpenAI-compatible base URL, supports host / host/ / host/v1"),
         )
 
         # Try to use searchbox for model selection, fall back to text_input
@@ -155,6 +159,43 @@ def page_setting():
         if llm_support_json != load_key("api.llm_support_json"):
             update_key("api.llm_support_json", llm_support_json)
             st.rerun()
+
+        with st.expander(t("Relay Compatibility (Advanced)"), expanded=False):
+            api_protocol = st.selectbox(
+                t("API Protocol"),
+                options=["chat_completions", "responses"],
+                index=["chat_completions", "responses"].index(_load_key_safe("api.api_protocol", "chat_completions")),
+                help=t("Choose relay protocol path strategy"),
+            )
+            if api_protocol != _load_key_safe("api.api_protocol", "chat_completions"):
+                update_key("api.api_protocol", api_protocol)
+                st.rerun()
+
+            supports_response_format = st.toggle(
+                t("Supports response_format"),
+                value=_load_key_safe("api.supports_response_format", False),
+                help=t("Turn off for relays that block JSON mode parameters"),
+            )
+            if supports_response_format != _load_key_safe("api.supports_response_format", False):
+                update_key("api.supports_response_format", supports_response_format)
+                st.rerun()
+
+            supports_tools = st.toggle(
+                t("Supports tools/advanced params"),
+                value=_load_key_safe("api.supports_tools", False),
+                help=t("Turn off for strict OpenAI-compatible relays"),
+            )
+            if supports_tools != _load_key_safe("api.supports_tools", False):
+                update_key("api.supports_tools", supports_tools)
+                st.rerun()
+
+            sanitize_null_fields = st.toggle(
+                t("Sanitize null/None fields"),
+                value=_load_key_safe("api.sanitize_null_fields", True),
+            )
+            if sanitize_null_fields != _load_key_safe("api.sanitize_null_fields", True):
+                update_key("api.sanitize_null_fields", sanitize_null_fields)
+                st.rerun()
     with st.expander(t("Subtitles Settings"), expanded=True):
         c1, c2 = st.columns(2)
         with c1:

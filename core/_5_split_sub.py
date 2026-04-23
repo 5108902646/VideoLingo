@@ -34,8 +34,12 @@ def align_subs(src_sub: str, tr_sub: str, src_part: str) -> Tuple[List[str], Lis
     align_prompt = get_align_prompt(src_sub, tr_sub, src_part)
     
     def valid_align(response_data):
+        if not isinstance(response_data, dict):
+            return {"status": "error", "message": f"Expected object, got {type(response_data).__name__}"}
         if 'align' not in response_data:
             return {"status": "error", "message": "Missing required key: `align`"}
+        if not isinstance(response_data['align'], list):
+            return {"status": "error", "message": "Invalid response format: `align` must be a list"}
         if len(response_data['align']) < 2:
             return {"status": "error", "message": "Align does not contain more than 1 part as expected!"}
         return {"status": "success", "message": "Align completed"}
