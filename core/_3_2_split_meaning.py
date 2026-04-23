@@ -9,6 +9,38 @@ from rich.table import Table
 from core.utils.models import _3_1_SPLIT_BY_NLP, _3_2_SPLIT_BY_MEANING
 console = Console()
 
+
+def _normalize_split_response(response_data):
+    """Normalize mildly non-compliant LLM output to expected split schema."""
+    if not isinstance(response_data, dict):
+        return response_data
+
+    # Some relays/models return only `split`.
+    if "split" in response_data and "split1" not in response_data:
+        response_data["split1"] = response_data["split"]
+
+    # Normalize numeric choice to string.
+    if "choice" in response_data:
+        response_data["choice"] = str(response_data["choice"]).strip()
+
+    # Recover missing choice from available split candidates.
+    if "choice" not in response_data:
+        if isinstance(response_data.get("split1"), str) and "[br]" in response_data["split1"]:
+            response_data["choice"] = "1"
+        elif isinstance(response_data.get("split2"), str) and "[br]" in response_data["split2"]:
+            response_data["choice"] = "2"
+
+    # Fallback when choice exists but referenced split is missing.
+    if "choice" in response_data:
+        choice = str(response_data["choice"])
+        if f"split{choice}" not in response_data:
+            if isinstance(response_data.get("split1"), str):
+                response_data["choice"] = "1"
+            elif isinstance(response_data.get("split2"), str):
+                response_data["choice"] = "2"
+
+    return response_data
+
 def tokenize_sentence(sentence, nlp):
     doc = nlp(sentence)
     return [token.text for token in doc]
@@ -49,11 +81,12 @@ def split_sentence(sentence, num_parts, word_limit=20, index=-1, retry_attempt=0
     """Split a long sentence using GPT and return the result as a string."""
     split_prompt = get_split_prompt(sentence, num_parts, word_limit)
     def valid_split(response_data):
+        response_data = _normalize_split_response(response_data)
         if not isinstance(response_data, dict):
             return {"status": "error", "message": f"Expected object, got {type(response_data).__name__}"}
         if "choice" not in response_data:
             return {"status": "error", "message": "Missing required key: `choice`"}
-        choice = response_data["choice"]
+        choice = str(response_data["choice"]).strip()
         if f'split{choice}' not in response_data:
             return {"status": "error", "message": "Missing required key: `split`"}
         if not isinstance(response_data[f"split{choice}"], str):
@@ -63,7 +96,8 @@ def split_sentence(sentence, num_parts, word_limit=20, index=-1, retry_attempt=0
         return {"status": "success", "message": "Split completed"}
     
     response_data = ask_gpt(split_prompt + " " * retry_attempt, resp_type='json', valid_def=valid_split, log_title='split_by_meaning')
-    choice = response_data["choice"]
+    response_data = _normalize_split_response(response_data)
+    choice = str(response_data["choice"]).strip()
     best_split = response_data[f"split{choice}"]
     split_points = find_split_positions(sentence, best_split)
     # split the sentence based on the split points

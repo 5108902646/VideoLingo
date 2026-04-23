@@ -70,21 +70,39 @@ def build_base_url_candidates(base_url: str):
 def build_request_urls(base_url: str, api_protocol: str, cfg: dict | None = None):
     cfg = cfg or {}
     if api_protocol == "responses":
-        default_path = "/responses"
         custom_path = (cfg.get("responses_path") or "").strip()
+        endpoint_paths = [
+            custom_path,
+            "/responses",
+            "/v1/responses",
+            "/api/v1/responses",
+            "/openai/v1/responses",
+        ]
     else:
-        default_path = "/chat/completions"
         custom_path = (cfg.get("chat_completions_path") or "").strip()
+        endpoint_paths = [
+            custom_path,
+            "/chat/completions",
+            "/v1/chat/completions",
+            "/api/v1/chat/completions",
+            "/openai/v1/chat/completions",
+        ]
 
-    endpoint_path = custom_path if custom_path else default_path
-    if not endpoint_path.startswith("/"):
-        endpoint_path = "/" + endpoint_path
+    normalized_paths = []
+    for path in endpoint_paths:
+        if not path:
+            continue
+        if not path.startswith("/"):
+            path = "/" + path
+        if path not in normalized_paths:
+            normalized_paths.append(path)
 
     urls = []
     for base in build_base_url_candidates(base_url):
-        url = f"{base.rstrip('/')}{endpoint_path}"
-        if url not in urls:
-            urls.append(url)
+        for path in normalized_paths:
+            url = f"{base.rstrip('/')}{path}"
+            if url not in urls:
+                urls.append(url)
     return urls
 
 
@@ -366,6 +384,34 @@ def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, paylo
     }
     last_error = None
 
+    def _is_probably_html(text):
+        if not isinstance(text, str):
+            return False
+        low = text.lower()
+        return "<html" in low or "<!doctype html" in low
+
+    def _is_llm_payload(data):
+        if isinstance(data, dict):
+            # Chat Completions-like
+            if isinstance(data.get("choices"), list) and data.get("choices"):
+                return True
+            # Responses-like
+            if "output" in data or "output_text" in data:
+                return True
+            # Common OpenAI shape hint
+            if isinstance(data.get("object"), str) and data.get("object") in {
+                "chat.completion",
+                "response",
+            }:
+                return True
+            # Explicit error payload should not be treated as success.
+            if "error" in data:
+                return False
+            # Known website config payload from Sub2API dashboard page.
+            if "site_name" in data and "site_subtitle" in data:
+                return False
+        return False
+
     for url in candidate_urls:
         resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
         raw_text = truncate_text(resp.text or "", 2000)
@@ -378,7 +424,22 @@ def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, paylo
                 parsed = resp.text
 
         if resp.status_code < 400:
-            return parsed, resp.status_code, raw_text, url
+            # Some relays return website HTML (200 OK) for wrong endpoint paths.
+            if _is_probably_html(raw_text):
+                last_error = {
+                    "status_code": resp.status_code,
+                    "error": "Received HTML page instead of LLM API response",
+                    "url": url,
+                }
+                continue
+            if _is_llm_payload(parsed):
+                return parsed, resp.status_code, raw_text, url
+            last_error = {
+                "status_code": resp.status_code,
+                "error": "Endpoint responded but payload is not an LLM schema",
+                "url": url,
+            }
+            continue
 
         err_msg = raw_text
         if isinstance(parsed, dict):
