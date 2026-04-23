@@ -42,6 +42,53 @@ def _fetch_model_list(base_url, api_key):
     return []
 
 
+def _probe_models_auth(base_url, api_key):
+    """Probe /models style endpoints to classify auth vs gateway/network issues."""
+    models_path = _load_key_safe("api.models_path", "")
+    cfg = {"models_path": models_path}
+    candidate_urls = build_models_urls(base_url, cfg)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    saw_gateway_error = False
+    last_error = ""
+
+    for url in candidate_urls:
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"status": "ok", "message": "Models endpoint reachable"}
+            if resp.status_code in (401, 403):
+                return {"status": "auth_error", "message": f"HTTP {resp.status_code} from models endpoint"}
+            if resp.status_code in (502, 503, 504):
+                saw_gateway_error = True
+                last_error = f"HTTP {resp.status_code} from models endpoint"
+                continue
+            if resp.status_code in (404, 405):
+                continue
+            last_error = f"HTTP {resp.status_code} from models endpoint"
+        except Exception as e:
+            last_error = str(e)
+
+    if saw_gateway_error:
+        return {"status": "relay_error", "message": last_error or "Relay upstream gateway error"}
+    if last_error:
+        return {"status": "unknown", "message": last_error}
+    return {"status": "unknown", "message": "No reachable models endpoint"}
+
+
+def _classify_api_check_error(exc):
+    msg = str(exc)
+    low = msg.lower()
+    if any(k in low for k in ["http 401", "http 403", "unauthorized", "invalid api key", "incorrect api key"]):
+        return {"ok": False, "code": "auth_error", "message": t("API Key is invalid")}
+    if any(k in low for k in ["http 502", "http 503", "http 504", "bad gateway", "upstream gateway"]):
+        return {"ok": False, "code": "relay_error", "message": "Relay is temporarily unavailable (5xx). API key may still be valid."}
+    if any(k in low for k in ["timeout", "timed out", "connection error", "name or service not known"]):
+        return {"ok": False, "code": "network_error", "message": "Network or DNS error while checking API."}
+    if "http 400" in low and "model" in low:
+        return {"ok": False, "code": "model_error", "message": "API reachable, but model is invalid or unsupported."}
+    return {"ok": False, "code": "unknown", "message": f"API check failed: {msg}"}
+
+
 def _search_models(search_term, **kwargs):
     """Search function for st_searchbox — returns models matching the search term."""
     models = st.session_state.get("_model_list", [])
@@ -136,10 +183,10 @@ def page_setting():
 
             if st.button("📡 " + t("Check API"), key="api", use_container_width=True):
                 with st.spinner(t("Check API") + "..."):
-                    is_valid = check_api()
+                    check_result = check_api()
                 st.toast(
-                    t("API Key is valid") if is_valid else t("API Key is invalid"),
-                    icon="✅" if is_valid else "❌",
+                    check_result.get("message", t("API Key is invalid")),
+                    icon="✅" if check_result.get("ok") else "❌",
                 )
         except ImportError:
             c1, c2 = st.columns([4, 1])
@@ -152,10 +199,10 @@ def page_setting():
                 )
             with c2:
                 if st.button("📡", key="api"):
-                    is_valid = check_api()
+                    check_result = check_api()
                     st.toast(
-                        t("API Key is valid") if is_valid else t("API Key is invalid"),
-                        icon="✅" if is_valid else "❌",
+                        check_result.get("message", t("API Key is invalid")),
+                        icon="✅" if check_result.get("ok") else "❌",
                     )
         llm_support_json = st.toggle(
             t("LLM JSON Format Support"),
@@ -372,15 +419,26 @@ def page_setting():
 
 
 def check_api():
+    # Step 1: auth probe via models endpoint to avoid false invalid-key on relay 5xx.
+    probe = _probe_models_auth(load_key("api.base_url"), load_key("api.key"))
+    if probe["status"] == "ok":
+        return {"ok": True, "message": t("API Key is valid")}
+    if probe["status"] == "auth_error":
+        return {"ok": False, "message": t("API Key is invalid")}
+
+    # Step 2: functional check via completion call.
     try:
         resp = ask_gpt(
-            "This is a test, response 'message':'success' in json format.",
-            resp_type="json",
+            "Reply with exactly: success",
+            resp_type=None,
             log_title="None",
         )
-        return resp.get("message") == "success"
-    except Exception:
-        return False
+        ok = isinstance(resp, str) and "success" in resp.lower()
+        if ok:
+            return {"ok": True, "message": t("API Key is valid")}
+        return {"ok": False, "message": "API reachable, but test response is unexpected."}
+    except Exception as e:
+        return _classify_api_check_error(e)
 
 
 if __name__ == "__main__":
