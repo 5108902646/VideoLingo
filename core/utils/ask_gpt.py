@@ -2,17 +2,18 @@ import os
 import json
 import time
 from threading import Lock
-from openai import OpenAI
 from core.utils.config_utils import load_key
 from rich import print as rprint
 from core.utils.openai_compatible import (
     apply_degradation,
+    build_request_url,
     classify_retry_action,
     debug_log,
     load_cfg_safe,
     normalize_base_url,
     parse_json_relaxed,
     parse_response_text,
+    post_openai_compatible,
     redact_payload,
     response_to_text,
     sanitize_payload,
@@ -73,10 +74,10 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         "supports_tools": load_cfg_safe(load_key, "api.supports_tools", False),
         "sanitize_null_fields": load_cfg_safe(load_key, "api.sanitize_null_fields", True),
         "drop_optional_fields": load_cfg_safe(load_key, "api.drop_optional_fields", []),
+        "auto_switch_protocol_on_block": load_cfg_safe(load_key, "api.auto_switch_protocol_on_block", True),
     }
 
     base_url = normalize_base_url(load_key("api.base_url"), api_protocol)
-    client = OpenAI(api_key=api_key, base_url=base_url)
     timeout = int(load_cfg_safe(load_key, "api.request_timeout", 300))
     use_json_mode = resp_type == "json" and bool(load_key("api.llm_support_json"))
     response_format = {"type": "json_object"} if use_json_mode else None
@@ -97,6 +98,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
         }
     params = sanitize_payload(params, compat_cfg)
 
+    request_url = build_request_url(base_url, api_protocol)
     debug_log(
         "request_prepared",
         {
@@ -104,19 +106,24 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
             "provider": compat_cfg["provider_type"],
             "protocol": api_protocol,
             "base_url": base_url,
+            "request_url": request_url,
             "payload": redact_payload(params),
         },
     )
 
     max_retry = 5
     degraded_steps = 0
+    protocol_switched = False
     last_exc = None
     for attempt in range(max_retry):
         try:
-            if api_protocol == "responses":
-                resp_raw = client.responses.create(**params)
-            else:
-                resp_raw = client.chat.completions.create(**params)
+            resp_raw, status_code, raw_text, final_url = post_openai_compatible(
+                base_url=base_url,
+                api_key=api_key,
+                api_protocol=api_protocol,
+                payload=params,
+                timeout=timeout,
+            )
 
             resp_content, parser_path = parse_response_text(resp_raw)
             parse_attempts = ["text"]
@@ -137,9 +144,11 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                     "log_title": log_title,
                     "protocol": api_protocol,
                     "base_url": base_url,
+                    "request_url": final_url,
+                    "status_code": status_code,
                     "parser_path": parser_path,
                     "json_parse_attempts": parse_attempts,
-                    "raw_response": response_to_text(resp_raw, max_len=2000),
+                    "raw_response": raw_text or response_to_text(resp_raw, max_len=2000),
                 },
             )
             _save_cache(model, prompt, resp_content, resp_type, resp, log_title=log_title)
@@ -153,6 +162,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                     "log_title": log_title,
                     "protocol": api_protocol,
                     "base_url": base_url,
+                    "request_url": build_request_url(base_url, api_protocol),
                     "retry": attempt + 1,
                     "error": error_text,
                     "payload": redact_payload(params),
@@ -176,6 +186,43 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
                     },
                 )
                 rprint(f"[yellow]Relay compatibility fallback: {action}[/yellow]")
+
+            blocked_like = "blocked" in error_text.lower() or "http 403" in error_text.lower()
+            if (
+                not action
+                and compat_cfg.get("auto_switch_protocol_on_block", True)
+                and blocked_like
+                and not protocol_switched
+            ):
+                api_protocol = "chat_completions" if api_protocol == "responses" else "responses"
+                compat_cfg["api_protocol"] = api_protocol
+                protocol_switched = True
+                if api_protocol == "responses":
+                    params = {
+                        "model": model,
+                        "input": prompt,
+                        "response_format": response_format,
+                        "timeout": timeout,
+                    }
+                else:
+                    params = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "response_format": response_format,
+                        "timeout": timeout,
+                    }
+                params = sanitize_payload(params, compat_cfg)
+                debug_log(
+                    "request_protocol_switched",
+                    {
+                        "log_title": log_title,
+                        "new_protocol": api_protocol,
+                        "request_url": build_request_url(base_url, api_protocol),
+                        "retry": attempt + 1,
+                        "payload": redact_payload(params),
+                    },
+                )
+                rprint(f"[yellow]Relay compatibility fallback: switch protocol to {api_protocol}[/yellow]")
 
             rprint(f"[red]GPT request failed: {error_text}, retry: {attempt+1}/{max_retry}[/red]")
             time.sleep(2 ** attempt)

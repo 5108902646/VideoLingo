@@ -4,6 +4,7 @@ from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
 import json_repair
+import requests
 
 
 DEBUG_LOG_FILE = "output/gpt_log/relay_compat_debug.jsonl"
@@ -49,6 +50,13 @@ def normalize_base_url(base_url: str, api_protocol: str) -> str:
     if api_protocol in {"chat_completions", "responses"}:
         return _ensure_v1_path(url).rstrip("/")
     return url
+
+
+def build_request_url(base_url: str, api_protocol: str) -> str:
+    url = (base_url or "").rstrip("/")
+    if api_protocol == "responses":
+        return f"{url}/responses"
+    return f"{url}/chat/completions"
 
 
 def sanitize_payload(payload: dict, cfg: dict) -> dict:
@@ -299,3 +307,30 @@ def response_to_text(resp_obj, max_len=2000):
         return truncate_text(str(resp_obj), max_len)
     except Exception:
         return truncate_text(str(resp_obj), max_len)
+
+
+def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, payload: dict, timeout: int = 300):
+    url = build_request_url(base_url, api_protocol)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    raw_text = truncate_text(resp.text or "", 2000)
+
+    parsed = None
+    if resp.text:
+        try:
+            parsed = resp.json()
+        except Exception:
+            parsed = resp.text
+
+    if resp.status_code >= 400:
+        err_msg = raw_text
+        if isinstance(parsed, dict):
+            error_obj = parsed.get("error")
+            if isinstance(error_obj, dict):
+                err_msg = error_obj.get("message") or error_obj.get("code") or raw_text
+        raise ValueError(f"HTTP {resp.status_code}: {err_msg}")
+
+    return parsed, resp.status_code, raw_text, url
