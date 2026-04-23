@@ -68,6 +68,7 @@ def ask_gpt(prompt, resp_type=None, valid_def=None, log_title="default"):
 
     compat_cfg = {
         "provider_type": load_cfg_safe(load_key, "api.provider_type", "openai_compatible"),
+        "api_protocol": api_protocol,
         "supports_response_format": load_cfg_safe(load_key, "api.supports_response_format", load_key("api.llm_support_json")),
         "supports_tools": load_cfg_safe(load_key, "api.supports_tools", False),
         "sanitize_null_fields": load_cfg_safe(load_key, "api.sanitize_null_fields", True),

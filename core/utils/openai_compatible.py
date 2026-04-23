@@ -249,6 +249,8 @@ def classify_retry_action(exc: Exception, degraded_steps: int):
     msg = str(exc).lower()
     if degraded_steps >= 3:
         return None
+    if "unexpected keyword argument 'messages'" in msg:
+        return "fix_protocol_payload"
     if any(flag in msg for flag in ["blocked", "unsupported", "invalid_request_error", "bad request", "400"]):
         if degraded_steps == 0:
             return "drop_response_format"
@@ -259,18 +261,31 @@ def classify_retry_action(exc: Exception, degraded_steps: int):
 
 
 def apply_degradation(payload: dict, action: str, cfg: dict):
+    protocol = cfg.get("api_protocol", "chat_completions")
+
+    if action == "fix_protocol_payload":
+        if protocol == "responses":
+            payload.pop("messages", None)
+        else:
+            payload.pop("input", None)
     if action == "drop_response_format":
         payload.pop("response_format", None)
     elif action == "drop_optional_fields":
         for key in ["tools", "parallel_tool_calls", "seed", "temperature", "top_p", "presence_penalty", "frequency_penalty"]:
             payload.pop(key, None)
     elif action == "minimal_payload":
-        payload = {
-            "model": payload.get("model"),
-            "timeout": payload.get("timeout", 300),
-            "messages": payload.get("messages", []),
-            "input": payload.get("input"),
-        }
+        if protocol == "responses":
+            payload = {
+                "model": payload.get("model"),
+                "timeout": payload.get("timeout", 300),
+                "input": payload.get("input"),
+            }
+        else:
+            payload = {
+                "model": payload.get("model"),
+                "timeout": payload.get("timeout", 300),
+                "messages": payload.get("messages", []),
+            }
         payload = {k: v for k, v in payload.items() if v is not None}
     return sanitize_payload(payload, cfg)
 
