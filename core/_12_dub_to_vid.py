@@ -2,7 +2,6 @@ import platform
 import subprocess
 
 import cv2
-import numpy as np
 from rich.console import Console
 
 from core._1_ytdlp import find_video_files
@@ -36,12 +35,23 @@ def merge_video_audio():
     if not load_key("burn_subtitles"):
         rprint("[bold yellow]Warning: A 0-second black video will be generated as a placeholder as subtitles are not burned in.[/bold yellow]")
 
-        # Create a black frame
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(DUB_VIDEO, fourcc, 1, (1920, 1080))
-        out.write(frame)
-        out.release()
+        # Generate a short black placeholder clip without numpy dependency.
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1920x1080:d=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                DUB_VIDEO,
+            ],
+            check=True,
+        )
 
         rprint("[bold green]Placeholder video has been generated.[/bold green]")
         return
