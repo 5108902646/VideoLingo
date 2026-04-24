@@ -84,6 +84,9 @@ def _task_control_panel(runner_key: str):
 
     elif runner.state == "error":
         st.error(f"❌ {t('Task error')}: {runner.error_msg}")
+        if runner.error_trace:
+            with st.expander("Traceback", expanded=False):
+                st.code(runner.error_trace, language="python")
         if st.button(t("OK"), key=f"{runner_key}_ack_error", use_container_width=True):
             runner.reset()
             st.rerun(scope="app")

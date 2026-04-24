@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -32,6 +33,7 @@ class TaskRunner:
     total_steps: int = 0
     current_label: str = ""
     error_msg: str = ""
+    error_trace: str = ""
 
     # Internal
     _pause_event: threading.Event = field(default_factory=threading.Event)
@@ -66,6 +68,7 @@ class TaskRunner:
         self.current_step = -1
         self.current_label = ""
         self.error_msg = ""
+        self.error_trace = ""
         self.state = "running"
 
         self._pause_event.set()
@@ -99,6 +102,7 @@ class TaskRunner:
             self.total_steps = 0
             self.current_label = ""
             self.error_msg = ""
+            self.error_trace = ""
             self._steps = []
 
     @property
@@ -142,4 +146,6 @@ class TaskRunner:
             self.state = "completed"
         except Exception as e:
             self.error_msg = str(e)
+            self.error_trace = traceback.format_exc()
+            print(self.error_trace)
             self.state = "error"
