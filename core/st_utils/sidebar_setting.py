@@ -328,6 +328,7 @@ def page_setting():
             "sf_fish_tts",
             "edge_tts",
             "gpt_sovits",
+            "proxy_tts",
             "custom_tts",
             "sf_cosyvoice2",
             "f5tts",
@@ -410,6 +411,29 @@ def page_setting():
 
         elif select_tts == "edge_tts":
             config_input(t("Edge TTS Voice"), "edge_tts.voice")
+
+        elif select_tts == "proxy_tts":
+            config_input("Proxy Endpoint URL", "proxy_tts.endpoint_url")
+            config_input("Voice", "proxy_tts.voice")
+            config_input("Model", "proxy_tts.model")
+            proxy_speed = st.number_input(
+                "Speed",
+                min_value=0.5,
+                max_value=2.0,
+                value=float(load_key("proxy_tts.speed")),
+                step=0.1,
+            )
+            if proxy_speed != load_key("proxy_tts.speed"):
+                update_key("proxy_tts.speed", proxy_speed)
+            proxy_chunk_size = st.number_input(
+                "Chunk Size",
+                min_value=20,
+                max_value=500,
+                value=int(load_key("proxy_tts.chunk_size")),
+                step=10,
+            )
+            if proxy_chunk_size != load_key("proxy_tts.chunk_size"):
+                update_key("proxy_tts.chunk_size", proxy_chunk_size)
 
         elif select_tts == "sf_cosyvoice2":
             config_input(t("SiliconFlow API Key"), "sf_cosyvoice2.api_key")
