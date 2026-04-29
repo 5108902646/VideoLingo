@@ -82,8 +82,35 @@ def split_align_subs(src_lines: List[str], tr_lines: List[str]):
     
     @except_handler("Error in split_align_subs")
     def process(i):
-        split_src = split_sentence(src_lines[i], num_parts=2).strip()
-        src_parts, tr_parts, tr_remerged = align_subs(src_lines[i], tr_lines[i], split_src)
+        original_src = str(src_lines[i])
+        split_src = split_sentence(original_src, num_parts=2).strip()
+        
+        # VERY IMPORTANT: Verify LLM didn't hallucinate/translate the source text
+        import re
+        import difflib
+        def clean_text(text):
+            text = text.replace('\n', '').replace(' ', '')
+            text = re.sub(r'[^\w\s]', '', text)
+            return text.lower()
+            
+        clean_split = clean_text(split_src)
+        clean_orig = clean_text(original_src)
+        
+        similarity = difflib.SequenceMatcher(None, clean_split, clean_orig).ratio()
+        if similarity < 0.8:
+            console.print(f"[yellow]⚠️ Warning: GPT altered source text (sim={similarity:.2f}). Using fallback split.[/yellow]")
+            mid = len(original_src) // 2
+            split_src = original_src[:mid] + "\n" + original_src[mid:]
+            
+        src_parts, tr_parts, tr_remerged = align_subs(original_src, tr_lines[i], split_src)
+        
+        # Double check aligned source hasn't mutated the text
+        clean_aligned = clean_text("".join(src_parts))
+        align_sim = difflib.SequenceMatcher(None, clean_aligned, clean_orig).ratio()
+        if align_sim < 0.8:
+            console.print(f"[yellow]⚠️ Warning: GPT altered source text during align (sim={align_sim:.2f}). Skipping split for this row.[/yellow]")
+            # Skip updating so it remains un-split rather than corrupting the source
+            return
         
         # Ensure row-level alignment to prevent cascading mismatch downstream
         if len(src_parts) > len(tr_parts):
