@@ -41,6 +41,16 @@ def normalize_base_url(base_url: str, api_protocol: str) -> str:
             url = url[: -len(suffix)]
             break
 
+    # Strip OpenAI-specific relay prefixes like /v1/openai that may be used by some proxies
+    # This handles cases like "https://relay.com/v1/openai" -> "https://relay.com/v1"
+    for suffix in ["/v1/openai", "/openai/v1", "/openai"]:
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            # If we stripped /v1/openai, ensure we keep /v1 base
+            if suffix == "/v1/openai" and not url.endswith("/v1"):
+                url = f"{url}/v1"
+            break
+
     # Keep the URL as entered (after normalization) and probe both with/without /v1 later.
     return url
 
@@ -51,7 +61,9 @@ def _with_v1_path(base_url: str) -> str:
     if not path:
         path = "/v1"
     elif not path.endswith("/v1"):
-        path = f"{path}/v1"
+        # Only add /v1 if it's not already in the path somewhere
+        if "/v1" not in path:
+            path = f"{path}/v1"
     return urlunparse(parsed._replace(path=path))
 
 
