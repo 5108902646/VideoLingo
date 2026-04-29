@@ -79,25 +79,19 @@ def build_base_url_candidates(base_url: str):
     return candidates
 
 
-def build_request_urls(base_url: str, api_protocol: str, cfg: dict | None = None):
+def build_request_urls(base_url: str, api_protocol: str, cfg: dict = None):
     cfg = cfg or {}
     if api_protocol == "responses":
         custom_path = (cfg.get("responses_path") or "").strip()
         endpoint_paths = [
             custom_path,
             "/responses",
-            "/v1/responses",
-            "/api/v1/responses",
-            "/openai/v1/responses",
         ]
     else:
         custom_path = (cfg.get("chat_completions_path") or "").strip()
         endpoint_paths = [
             custom_path,
             "/chat/completions",
-            "/v1/chat/completions",
-            "/api/v1/chat/completions",
-            "/openai/v1/chat/completions",
         ]
 
     normalized_paths = []
@@ -113,6 +107,9 @@ def build_request_urls(base_url: str, api_protocol: str, cfg: dict | None = None
     for base in build_base_url_candidates(base_url):
         for path in normalized_paths:
             url = f"{base.rstrip('/')}{path}"
+            # Fix potential double /v1/v1 or /openai/openai generated from base+path combos
+            url = url.replace("/v1/v1/", "/v1/").replace("/v1/v1", "/v1")
+            url = url.replace("/openai/openai/", "/openai/").replace("/openai/openai", "/openai")
             if url not in urls:
                 urls.append(url)
     return urls
@@ -123,7 +120,7 @@ def build_request_url(base_url: str, api_protocol: str):
     return build_request_urls(base_url, api_protocol)[0]
 
 
-def build_models_urls(base_url: str, cfg: dict | None = None):
+def build_models_urls(base_url: str, cfg: dict = None):
     cfg = cfg or {}
     custom_path = (cfg.get("models_path") or "").strip()
     default_path = custom_path if custom_path else "/models"
@@ -388,7 +385,7 @@ def response_to_text(resp_obj, max_len=2000):
         return truncate_text(str(resp_obj), max_len)
 
 
-def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, payload: dict, timeout: int = 300, cfg: dict | None = None):
+def post_openai_compatible(base_url: str, api_key: str, api_protocol: str, payload: dict, timeout: int = 300, cfg: dict = None):
     candidate_urls = build_request_urls(base_url, api_protocol, cfg)
     headers = {
         "Authorization": f"Bearer {api_key}",
