@@ -414,6 +414,17 @@ def page_setting():
 
         elif select_tts == "proxy_tts":
             config_input("Proxy Endpoint URL", "proxy_tts.endpoint_url")
+            config_input("Origin", "proxy_tts.origin", placeholder="https://ttshub.com")
+            config_input("Referer", "proxy_tts.referer", placeholder="https://ttshub.com/")
+            config_input("User-Agent", "proxy_tts.user_agent")
+            proxy_cookie = st.text_input(
+                "Cookie (optional)",
+                value=load_key("proxy_tts.cookie"),
+                type="password",
+                help="Paste the Cookie header value from a working browser/curl request if the proxy returns 403.",
+            )
+            if proxy_cookie != load_key("proxy_tts.cookie"):
+                update_key("proxy_tts.cookie", proxy_cookie)
             config_input("Voice", "proxy_tts.voice")
             config_input("Model", "proxy_tts.model")
             proxy_speed = st.number_input(

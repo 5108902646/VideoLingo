@@ -104,6 +104,10 @@ openai_tts:
 # Proxy TTS configuration, compatible with ttshub /proxy
 proxy_tts:
   endpoint_url: 'http://127.0.0.1:3000/proxy'
+  origin: ''
+  referer: ''
+  user_agent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+  cookie: ''
   voice: 'kltts_BV562_streaming'
   model: 'v1-hd'
   speed: 1.0

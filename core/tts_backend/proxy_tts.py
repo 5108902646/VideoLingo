@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from pydub import AudioSegment
@@ -12,6 +13,25 @@ from core.utils import load_key, rprint
 
 _REQUEST_LOCK = threading.Lock()
 _LAST_REQUEST_TIME = 0.0
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/147.0.0.0 Safari/537.36"
+)
+
+
+def _load_optional_key(key, default=""):
+    try:
+        return load_key(key)
+    except KeyError:
+        return default
+
+
+def _origin_from_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return ""
 
 
 def _load_proxy_config():
@@ -21,6 +41,10 @@ def _load_proxy_config():
     timeout_sec = int(load_key("proxy_tts.timeout_sec"))
     return {
         "endpoint_url": load_key("proxy_tts.endpoint_url").strip(),
+        "origin": str(_load_optional_key("proxy_tts.origin", "")).strip(),
+        "referer": str(_load_optional_key("proxy_tts.referer", "")).strip(),
+        "user_agent": str(_load_optional_key("proxy_tts.user_agent", DEFAULT_USER_AGENT)).strip(),
+        "cookie": str(_load_optional_key("proxy_tts.cookie", "")).strip(),
         "voice": load_key("proxy_tts.voice"),
         "model": load_key("proxy_tts.model"),
         "speed": float(load_key("proxy_tts.speed")),
@@ -29,6 +53,30 @@ def _load_proxy_config():
         "max_retries": max(1, max_retries),
         "timeout_sec": max(1, timeout_sec),
     }
+
+
+def _build_request_headers(config):
+    origin = config["origin"] or _origin_from_url(config["endpoint_url"])
+    referer = config["referer"] or (f"{origin}/" if origin else "")
+    headers = {
+        "Accept": "*/*",
+        "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Content-Type": "application/json",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    if config["user_agent"]:
+        headers["User-Agent"] = config["user_agent"]
+    if origin:
+        headers["Origin"] = origin
+    if referer:
+        headers["Referer"] = referer
+    if config["cookie"]:
+        headers["Cookie"] = config["cookie"]
+    return headers
 
 
 def _is_cjk_character(char):
@@ -190,7 +238,7 @@ def _request_audio_chunk(text, config, chunk_index, total_chunks):
             _wait_for_request_slot(config["request_cooldown_ms"])
             response = requests.post(
                 config["endpoint_url"],
-                headers={"Content-Type": "application/json"},
+                headers=_build_request_headers(config),
                 json={
                     "text": text,
                     "voice": config["voice"],
