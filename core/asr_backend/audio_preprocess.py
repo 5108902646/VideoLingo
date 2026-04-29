@@ -1,3 +1,4 @@
+import json
 import os, subprocess
 import pandas as pd
 from typing import Dict, List, Tuple
@@ -19,6 +20,47 @@ def _ffmpeg_has_encoder(encoder_name: str) -> bool:
     except Exception:
         return False
 
+def get_audio_video_start_offset(video_file: str) -> float:
+    """Return seconds of leading silence needed to keep extracted audio on video timeline."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type,start_time",
+                "-of",
+                "json",
+                video_file,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        streams = json.loads(result.stdout or "{}").get("streams", [])
+    except Exception:
+        return 0.0
+
+    video_starts = []
+    audio_starts = []
+    for stream in streams:
+        try:
+            start_time = float(stream.get("start_time", 0) or 0)
+        except (TypeError, ValueError):
+            start_time = 0.0
+        if stream.get("codec_type") == "video":
+            video_starts.append(start_time)
+        elif stream.get("codec_type") == "audio":
+            audio_starts.append(start_time)
+
+    if not video_starts or not audio_starts:
+        return 0.0
+
+    offset = min(audio_starts) - min(video_starts)
+    return offset if offset > 0.001 else 0.0
+
 def normalize_audio_volume(audio_path, output_path, target_db = -20.0, format = "wav"):
     audio = AudioSegment.from_file(audio_path)
     change_in_dBFS = target_db - audio.dBFS
@@ -31,9 +73,17 @@ def convert_video_to_audio(video_file: str):
     os.makedirs(_AUDIO_DIR, exist_ok=True)
     if not os.path.exists(_RAW_AUDIO_FILE):
         rprint(f"[blue]🎬➡️🎵 Converting to high quality audio with FFmpeg ......[/blue]")
+        timeline_offset = get_audio_video_start_offset(video_file)
+        audio_delay_filter = []
+        if timeline_offset > 0:
+            delay_ms = int(round(timeline_offset * 1000))
+            audio_delay_filter = ["-af", f"adelay={delay_ms}:all=1"]
+            rprint(f"[yellow]Detected audio stream starts {timeline_offset:.3f}s after video; padding extracted audio.[/yellow]")
+
         if _ffmpeg_has_encoder('libmp3lame'):
             cmd = [
                 'ffmpeg', '-y', '-i', video_file, '-vn',
+                *audio_delay_filter,
                 '-c:a', 'libmp3lame', '-b:a', '32k',
                 '-ar', '16000', '-ac', '1',
                 '-metadata', 'encoding=UTF-8', _RAW_AUDIO_FILE
@@ -46,6 +96,7 @@ def convert_video_to_audio(video_file: str):
             rprint("[yellow]⚠️ libmp3lame not found in ffmpeg, falling back to WAV (PCM) encoding[/yellow]")
             cmd = [
                 'ffmpeg', '-y', '-i', video_file, '-vn',
+                *audio_delay_filter,
                 '-c:a', 'pcm_s16le', '-ar', '16000', '-ac', '1',
                 '-f', 'wav', _RAW_AUDIO_FILE
             ]

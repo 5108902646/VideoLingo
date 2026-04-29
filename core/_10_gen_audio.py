@@ -1,3 +1,4 @@
+import ast
 import os
 import time
 import shutil
@@ -20,6 +21,33 @@ console = Console()
 TEMP_FILE_TEMPLATE = f"{_AUDIO_TMP_DIR}/{{}}_temp.wav"
 OUTPUT_FILE_TEMPLATE = f"{_AUDIO_SEGS_DIR}/{{}}.wav"
 WARMUP_SIZE = 5
+
+def parse_serialized_list(value, default=None):
+    """Parse list values saved by pandas/Excel, keeping old task files compatible."""
+    if default is None:
+        default = []
+    if isinstance(value, str):
+        try:
+            return ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            return default
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    return value
+
+def get_timing_offset() -> float:
+    try:
+        return float(load_key("subtitle.timing_offset_sec"))
+    except Exception:
+        return 0.0
+
+def apply_timing_offset(seconds: float, timing_offset: float) -> float:
+    return max(0.0, float(seconds) + timing_offset)
 
 def parse_df_srt_time(time_str: str) -> float:
     """Convert SRT time format to seconds"""
@@ -65,7 +93,7 @@ def adjust_audio_speed(input_file: str, output_file: str, speed_factor: float) -
 def process_row(row: pd.Series, tasks_df: pd.DataFrame) -> Tuple[int, float]:
     """Helper function for processing single row data"""
     number = row['number']
-    lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
+    lines = parse_serialized_list(row['lines'])
     real_dur = 0
     for line_index, line in enumerate(lines):
         temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
@@ -143,6 +171,7 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
     rprint("[bold blue]🔄 Starting audio chunks processing...[/bold blue]")
     accept = load_key("speed_factor.accept")
     min_speed = load_key("speed_factor.min")
+    timing_offset = get_timing_offset()
     chunk_start = 0
     
     tasks_df['new_sub_times'] = None
@@ -153,8 +182,11 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
             speed_factor, keep_gaps = process_chunk(chunk_df, accept, min_speed)
             
             # 🎯 Step1: Start processing new timeline
-            chunk_start_time = parse_df_srt_time(chunk_df.iloc[0]['start_time'])
-            chunk_end_time = parse_df_srt_time(chunk_df.iloc[-1]['end_time']) + chunk_df.iloc[-1]['tolerance'] # 加上tolerance才是这一块的结束
+            chunk_start_time = apply_timing_offset(parse_df_srt_time(chunk_df.iloc[0]['start_time']), timing_offset)
+            chunk_end_time = max(
+                chunk_start_time,
+                apply_timing_offset(parse_df_srt_time(chunk_df.iloc[-1]['end_time']), timing_offset)
+            ) + chunk_df.iloc[-1]['tolerance'] # 加上tolerance才是这一块的结束
             cur_time = chunk_start_time
             for i, row in chunk_df.iterrows():
                 # If i is not 0, which is not the first row of the chunk, cur_time needs to be added with the gap of the previous row, remember to divide by speed_factor
@@ -162,8 +194,17 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
                     cur_time += chunk_df.iloc[i-1]['gap']/speed_factor
                 new_sub_times = []
                 number = row['number']
-                lines = eval(row['lines']) if isinstance(row['lines'], str) else row['lines']
+                lines = parse_serialized_list(row['lines'])
+                line_times = parse_serialized_list(row.get('line_times'), [])
                 for line_index, line in enumerate(lines):
+                    if keep_gaps and line_index > 0 and line_index < len(line_times):
+                        try:
+                            scheduled_start = float(line_times[line_index][0])
+                        except (TypeError, ValueError, IndexError):
+                            scheduled_start = None
+                        if scheduled_start is not None and cur_time < scheduled_start:
+                            cur_time = scheduled_start
+
                     # 🔄 Step2: Start speed change and save as OUTPUT_FILE_TEMPLATE
                     temp_file = TEMP_FILE_TEMPLATE.format(f"{number}_{line_index}")
                     output_file = OUTPUT_FILE_TEMPLATE.format(f"{number}_{line_index}")
@@ -184,7 +225,7 @@ def merge_chunks(tasks_df: pd.DataFrame) -> pd.DataFrame:
                     rprint(f"[yellow]⚠️ Chunk {chunk_start} to {index} exceeds by {time_diff:.3f}s, truncating last audio[/yellow]")
                     # Get the last audio file
                     last_number = tasks_df.iloc[index]['number']
-                    last_lines = eval(tasks_df.iloc[index]['lines']) if isinstance(tasks_df.iloc[index]['lines'], str) else tasks_df.iloc[index]['lines']
+                    last_lines = parse_serialized_list(tasks_df.iloc[index]['lines'])
                     last_line_index = len(last_lines) - 1
                     last_file = OUTPUT_FILE_TEMPLATE.format(f"{last_number}_{last_line_index}")
                     

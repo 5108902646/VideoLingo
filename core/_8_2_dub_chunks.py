@@ -12,6 +12,27 @@ TRANS_SRT = "output/trans.srt"
 MAX_MERGE_COUNT = 5
 ESTIMATOR = None
 
+def parse_srt_timestamp(timestamp: str) -> float:
+    """Convert SRT timestamp to seconds."""
+    hours, minutes, rest = timestamp.strip().replace(",", ".").split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(rest)
+
+def parse_srt_blocks(content: str):
+    blocks = []
+    for block in content.strip().split('\n\n'):
+        lines = [line.strip() for line in block.split('\n') if line.strip()]
+        if len(lines) < 3:
+            continue
+        start_time, end_time = lines[1].split(' --> ')
+        text = ' '.join(lines[2:])
+        text = re.sub(r'\([^)]*\)|（[^）]*）', '', text).strip().replace('-', '')
+        blocks.append({
+            "text": text,
+            "start": parse_srt_timestamp(start_time),
+            "end": parse_srt_timestamp(end_time),
+        })
+    return blocks
+
 def calc_if_too_fast(est_dur, tol_dur, duration, tolerance):
     accept = load_key("speed_factor.accept") # Maximum acceptable speed factor
     if est_dur / accept > tol_dur:  # Even max speed factor cannot adapt
@@ -143,29 +164,16 @@ def gen_dub_chunks():
     content = open(TRANS_SRT, "r", encoding="utf-8").read()
     ori_content = open(SRC_SRT, "r", encoding="utf-8").read()
     
-    # Process subtitle content
-    content_lines = []
-    ori_content_lines = []
-    
-    # Process translated subtitles
-    for block in content.strip().split('\n\n'):
-        lines = [line.strip() for line in block.split('\n') if line.strip()]
-        if len(lines) >= 3:
-            text = ' '.join(lines[2:])
-            text = re.sub(r'\([^)]*\)|（[^）]*）', '', text).strip().replace('-', '')
-            content_lines.append(text)
-            
-    # Process source subtitles (same structure)
-    for block in ori_content.strip().split('\n\n'):
-        lines = [line.strip() for line in block.split('\n') if line.strip()]
-        if len(lines) >= 3:
-            text = ' '.join(lines[2:])
-            text = re.sub(r'\([^)]*\)|（[^）]*）', '', text).strip().replace('-', '')
-            ori_content_lines.append(text)
+    content_blocks = parse_srt_blocks(content)
+    ori_content_blocks = parse_srt_blocks(ori_content)
+    content_lines = [item["text"] for item in content_blocks]
+    ori_content_lines = [item["text"] for item in ori_content_blocks]
+    content_line_times = [(item["start"], item["end"]) for item in content_blocks]
 
     # Match processing
     df['lines'] = None
     df['src_lines'] = None
+    df['line_times'] = None
     last_idx = 0
 
     def clean_text(text):
@@ -190,6 +198,7 @@ def gen_dub_chunks():
             if current == target:
                 df.at[idx, 'lines'] = matches
                 df.at[idx, 'src_lines'] = [ori_content_lines[i] for i in match_indices]
+                df.at[idx, 'line_times'] = [content_line_times[i] for i in match_indices]
                 last_idx = i + 1
                 break
         else:  # If no match is found

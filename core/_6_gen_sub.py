@@ -20,8 +20,17 @@ AUDIO_SUBTITLE_OUTPUT_CONFIGS = [
     ('trans_subs_for_audio.srt', ['Translation'])
 ]
 
-def convert_to_srt_format(start_time, end_time):
+def get_timing_offset():
+    try:
+        return float(load_key("subtitle.timing_offset_sec"))
+    except Exception:
+        return 0.0
+
+def convert_to_srt_format(start_time, end_time, timing_offset=0.0):
     """Convert time (in seconds) to the format: hours:minutes:seconds,milliseconds"""
+    start_time = max(0.0, float(start_time) + timing_offset)
+    end_time = max(start_time, float(end_time) + timing_offset)
+
     def seconds_to_hmsm(seconds):
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
@@ -100,7 +109,7 @@ def get_sentence_timestamps(df_words, df_sentences):
     
     return time_stamp_list
 
-def align_timestamp(df_text, df_translate, subtitle_output_configs: list, output_dir: str, for_display: bool = True):
+def align_timestamp(df_text, df_translate, subtitle_output_configs: list, output_dir: str, for_display: bool = True, apply_timing_offset: bool = True):
     """Align timestamps and add a new timestamp column to df_translate"""
     df_trans_time = df_translate.copy()
 
@@ -121,7 +130,8 @@ def align_timestamp(df_text, df_translate, subtitle_output_configs: list, output
             df_trans_time.at[i, 'timestamp'] = (df_trans_time.loc[i, 'timestamp'][0], df_trans_time.loc[i+1, 'timestamp'][0])
 
     # Convert start and end timestamps to SRT format
-    df_trans_time['timestamp'] = df_trans_time['timestamp'].apply(lambda x: convert_to_srt_format(x[0], x[1]))
+    timing_offset = get_timing_offset() if apply_timing_offset else 0.0
+    df_trans_time['timestamp'] = df_trans_time['timestamp'].apply(lambda x: convert_to_srt_format(x[0], x[1], timing_offset))
 
     # Polish subtitles: replace punctuation in Translation if for_display
     if for_display:
@@ -160,7 +170,7 @@ def align_timestamp_main():
     df_translate_for_audio = pd.read_excel(_5_REMERGED) # use remerged file to avoid unmatched lines when dubbing
     df_translate_for_audio['Translation'] = df_translate_for_audio['Translation'].apply(clean_translation)
     
-    align_timestamp(df_text, df_translate_for_audio, AUDIO_SUBTITLE_OUTPUT_CONFIGS, _AUDIO_DIR)
+    align_timestamp(df_text, df_translate_for_audio, AUDIO_SUBTITLE_OUTPUT_CONFIGS, _AUDIO_DIR, apply_timing_offset=False)
     console.print(Panel(f"[bold green]🎉📝 Audio subtitles generation completed! Please check in the `{_AUDIO_DIR}` folder 👀[/bold green]"))
     
 
