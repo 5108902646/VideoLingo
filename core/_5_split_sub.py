@@ -84,6 +84,13 @@ def split_align_subs(src_lines: List[str], tr_lines: List[str]):
     def process(i):
         split_src = split_sentence(src_lines[i], num_parts=2).strip()
         src_parts, tr_parts, tr_remerged = align_subs(src_lines[i], tr_lines[i], split_src)
+        
+        # Ensure row-level alignment to prevent cascading mismatch downstream
+        if len(src_parts) > len(tr_parts):
+            tr_parts.extend([""] * (len(src_parts) - len(tr_parts)))
+        elif len(tr_parts) > len(src_parts):
+            src_parts.extend([""] * (len(tr_parts) - len(src_parts)))
+            
         src_lines[i] = src_parts
         tr_lines[i] = tr_parts
         remerged_tr_lines[i] = tr_remerged
@@ -121,6 +128,11 @@ def split_for_sub_main():
         src, trans = split_src, split_trans
 
     # 确保二者有相同的长度，防止报错
+    if len(split_src) > len(split_trans):
+        split_trans += [None] * (len(split_src) - len(split_trans))
+    elif len(split_trans) > len(split_src):
+        split_src += [None] * (len(split_trans) - len(split_src))
+
     if len(src) > len(remerged):
         remerged += [None] * (len(src) - len(remerged))
     elif len(remerged) > len(src):
